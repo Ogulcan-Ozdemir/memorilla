@@ -73,7 +73,7 @@ VARIANTS = {  # config prefix -> (language of the documents, language of the que
 }
 DEFAULT_OUTPUT_REPO = "data_tr"
 DEFAULT_COLLECTIONS = 10
-DEFAULT_MODEL = "xiaomi/mimo-v2.6-flash"
+DEFAULT_MODEL = "deepseek/deepseek-v4-flash"
 DEFAULT_REASONING_EFFORT = "none"
 DEFAULT_MAX_WORKERS = 32
 DEFAULT_MAX_RETRIES = 3

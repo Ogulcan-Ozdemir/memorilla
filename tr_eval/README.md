@@ -26,7 +26,7 @@ from the Artificial Analysis Intelligence Index):
 
 | Role | Default | Effort | Why |
 | --- | --- | --- | --- |
-| Translation (`--model`, `--reasoning_effort`) | `xiaomi/mimo-v2.6-flash` ($0.14/$0.28) | `none` | Translation is output-bound and needs no reasoning. The cheapest scored model (27) whose reasoning can be switched off: MiniMax-M3.1-Flash and GLM-5.3-Flash force reasoning, and Claude Haiku 5.5 costs almost twice as much per output token. |
+| Translation (`--model`, `--reasoning_effort`) | `deepseek/deepseek-v4-flash` ($0.091/$0.182) | `none` | Translation is output-bound and needs no reasoning. In a pilot on two PV4 documents it kept the speaker labels and the Turkish technical terms ("ITAB" for HAZ) and the user's casual register, at the lowest cost; `xiaomi/mimo-v2.6-flash` (index 27) translated the `Assistant:` label and coined a term, and `anthropic/claude-haiku-5.5` cost 2.5 times as much and made the register formal. MiniMax-M3.1-Flash and GLM-5.3-Flash force reasoning. |
 | Judge (`--judge_model`, `--judge_reasoning_effort`) | `anthropic/claude-haiku-5.5` ($0.10/$0.50) | `medium` | Judge prompts are input-heavy with short replies, so the low input price matters; it scores 25-36 depending on effort and comes from a different family than the translator and the evaluated model. |
 
 Also set a credit limit on the OpenRouter key itself (Settings → API Keys); that is the hard cap.
