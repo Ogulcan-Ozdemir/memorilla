@@ -31,9 +31,8 @@ import numpy as np
 from memorilla.metrics import METRICS_FILE, PREDICTIONS_FILE
 from memorilla.paths import DEFAULT_ENCODER, MODEL_CACHE_DIR, resolve
 from memorilla.utils import DEFAULT_SEED, write_json
-from personalizationv4.generate import complete, create_client
 from tr_eval.build_data import TURKISH, VARIANTS
-from tr_eval.common import JsonlCache, parse_json_object, stable_key
+from tr_eval.common import USAGE, JsonlCache, complete, create_client, parse_json_object, stable_key
 from tr_eval.prompts import judge_prompt
 from tr_eval.run_queue import DEFAULT_RESULTS, STATE_DIR
 
@@ -53,8 +52,8 @@ HUMAN_KEY = "human_key.csv"
 MIXED_MIN_WORDS = 3
 JUDGE_CRITERIA = ("personalization", "consistency", "no_fabrication", "grammar", "naturalness", "address")
 JUDGE_SCALE = (1, 5)
-DEFAULT_JUDGE_MODEL = "gpt-5.1"
-DEFAULT_JUDGE_REASONING_EFFORT = "none"
+DEFAULT_JUDGE_MODEL = "openai/gpt-6.1-terra"
+DEFAULT_JUDGE_REASONING_EFFORT = "medium"
 DEFAULT_MAX_WORKERS = 16
 DEFAULT_MAX_RETRIES = 3
 SIMILARITY_GPU_MEMORY_UTILIZATION = 0.9
@@ -220,7 +219,7 @@ class Judge:
         """Set up the judge.
 
         Args:
-            client: OpenAI client (or any object exposing ``responses.create``).
+            client: Client from ``tr_eval.common.create_client`` (or a test double; see ``tr_eval.common.complete``).
             model: Judge model.
             reasoning_effort: Reasoning effort for ``model``.
             max_retries: Attempts per request, and per unparsable reply.
@@ -477,6 +476,8 @@ def main(args: argparse.Namespace) -> None:
     if human_items:
         write_human_sheet(human_items, results, args.seed)
     LOGGER.info("Wrote %s and %s under %s.", SUMMARY_CSV, SUMMARY_MD, results)
+    if judge is not None:
+        LOGGER.info("Judge API usage (new requests only; cached judgements are free): %s", USAGE.summary())
 
 
 if __name__ == "__main__":

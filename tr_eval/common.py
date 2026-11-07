@@ -1,16 +1,140 @@
-"""Helpers shared by the Turkish-evaluation scripts: an append-only JSONL cache and JSON parsing of model replies."""
+"""Helpers shared by the Turkish-evaluation scripts: the LLM client, an append-only JSONL cache and JSON parsing.
 
+The client talks to OpenRouter when ``OPENROUTER_API_KEY`` is set (Chat Completions, with OpenRouter's ``reasoning``
+parameter and its per-request cost added to a running total), and otherwise to the OpenAI Responses API through
+``personalizationv4.generate``.
+"""
+
+from dataclasses import dataclass, field
 import hashlib
 import json
 import logging
+import os
 from pathlib import Path
 import re
 import threading
-from typing import Any
+import time
+from typing import TYPE_CHECKING, Any
+
+from personalizationv4 import generate
+
+if TYPE_CHECKING:
+    from openai import OpenAI
 
 LOGGER = logging.getLogger(__name__)
 
 CODE_FENCE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)
+OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY"
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+OPENROUTER_HOST = "openrouter.ai"
+
+
+@dataclass
+class UsageMeter:
+    """Thread-safe running totals of the tokens and the cost (as reported by OpenRouter) of the requests so far."""
+
+    requests: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cost: float = 0.0
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def add(self, usage: Any) -> None:
+        """Add one response's usage.
+
+        Args:
+            usage: The ``usage`` object of a Chat Completions response, or None.
+        """
+        with self._lock:
+            self.requests += 1
+            if usage is None:
+                return
+            self.prompt_tokens += getattr(usage, "prompt_tokens", 0) or 0
+            self.completion_tokens += getattr(usage, "completion_tokens", 0) or 0
+            self.cost += float(getattr(usage, "cost", 0) or 0)
+
+    def summary(self) -> str:
+        """Describe the totals.
+
+        Returns:
+            A one-line summary.
+        """
+        return (
+            f"{self.requests} requests, {self.prompt_tokens} prompt and {self.completion_tokens} completion tokens, "
+            f"${self.cost:.4f}"
+        )
+
+
+USAGE = UsageMeter()
+
+
+def create_client() -> "OpenAI":
+    """Create the LLM client: OpenRouter when ``OPENROUTER_API_KEY`` is set, otherwise OpenAI (``OPENAI_API_KEY``).
+
+    Returns:
+        An ``openai.OpenAI`` client.
+
+    Raises:
+        ImportError: If the ``openai`` package is not installed.
+    """
+    key = os.environ.get(OPENROUTER_KEY_ENV)
+    if not key:
+        return generate.create_client()
+    try:
+        from openai import OpenAI
+    except ImportError as error:
+        raise ImportError("The Turkish evaluation needs the openai package: pip install -e '.[tr]'") from error
+    LOGGER.info("Using OpenRouter (%s).", OPENROUTER_BASE_URL)
+    return OpenAI(base_url=OPENROUTER_BASE_URL, api_key=key)
+
+
+def is_openrouter(client: Any) -> bool:
+    """Whether a client points at OpenRouter.
+
+    Args:
+        client: An ``openai.OpenAI`` client (or a test double without ``base_url``).
+
+    Returns:
+        True for an OpenRouter client.
+    """
+    return OPENROUTER_HOST in str(getattr(client, "base_url", ""))
+
+
+def complete(client: "OpenAI", prompt: str, model: str, reasoning_effort: str, max_retries: int) -> str:
+    """Send one user prompt and return the reply text, through OpenRouter or the OpenAI Responses API.
+
+    Args:
+        client: The client from :func:`create_client`.
+        prompt: User message.
+        model: Model name (an OpenRouter id such as ``anthropic/claude-haiku-5.5`` for OpenRouter).
+        reasoning_effort: Reasoning effort (``none`` disables reasoning).
+        max_retries: Attempts before giving up; failed or empty responses are retried with exponential backoff.
+
+    Returns:
+        The non-empty reply text.
+
+    Raises:
+        RuntimeError: If every attempt fails or returns an empty response.
+    """
+    if not is_openrouter(client):
+        return generate.complete(client, prompt, model, reasoning_effort, max_retries)
+    for attempt in range(max_retries):
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                extra_body={"reasoning": {"effort": reasoning_effort}},
+            )
+            USAGE.add(response.usage)
+            text = response.choices[0].message.content if response.choices else None
+            if text and text.strip():
+                return text
+            LOGGER.warning("Empty response from %s (attempt %d/%d)", model, attempt + 1, max_retries)
+        except Exception as error:
+            LOGGER.warning("Request to %s failed (attempt %d/%d): %s", model, attempt + 1, max_retries, error)
+        if attempt + 1 < max_retries:
+            time.sleep(generate.RETRY_DELAY_SECONDS * 2**attempt)
+    raise RuntimeError(f"No response from {model} after {max_retries} attempts")
 
 
 def stable_key(*parts: Any) -> str:

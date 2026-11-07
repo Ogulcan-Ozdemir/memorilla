@@ -2,17 +2,30 @@
 
 Tools to test whether the released Memorilla checkpoints (`memorilla/Memorilla-Qwen3-8B`, trained on English data only)
 work when the user chats in Turkish. Everything runs from the repository root and needs the `tr` extra
-(`pip install -e ".[tr]"`); the translation and the judge also need `OPENAI_API_KEY`.
+(`pip install -e ".[tr]"`); the translation and the judge also need an API key (see [Models](#models)).
 
 | Module | What it does | Needs |
 | --- | --- | --- |
-| `python -m tr_eval.build_data` | Samples collections from a test split, machine-translates them once and writes four configs with the same rows: `en_<src>`, `tr_<src>`, `xlang_en2tr_<src>` (English memory, Turkish question) and `xlang_tr2en_<src>`. | CPU, OpenAI API |
+| `python -m tr_eval.build_data` | Samples collections from a test split, machine-translates them once and writes four configs with the same rows: `en_<src>`, `tr_<src>`, `xlang_en2tr_<src>` (English memory, Turkish question) and `xlang_tr2en_<src>`. | CPU, LLM API |
 | `python -m tr_eval.run_queue` | `plan` writes the job table, `run` works through it (resumable, with an optional copy to Google Drive after every job), `status` shows progress. | GPU for `run` |
-| `python -m tr_eval.score` | Adds Turkish-aware scores to every run: language fidelity, chrF++, optional embedding similarity and an LLM judge, then writes `summary.csv`/`summary.md` and an optional blind sheet for human raters. | CPU (GPU for `--embedding_similarity`), OpenAI API for the judge |
+| `python -m tr_eval.score` | Adds Turkish-aware scores to every run: language fidelity, chrF++, optional embedding similarity and an LLM judge, then writes `summary.csv`/`summary.md` and an optional blind sheet for human raters. | CPU (GPU for `--embedding_similarity`), LLM API for the judge |
 
 Choice accuracy, computed by `evaluate.py` itself, is the primary automatic metric: it compares embeddings and works in
 any language. The repository's BLEU, ROUGE and METEOR are not reliable for Turkish (see the docstring of
 `tr_eval/score.py`).
+
+## Models
+
+With `OPENROUTER_API_KEY` set, both scripts call [OpenRouter](https://openrouter.ai) (Chat Completions with its
+`reasoning` parameter) and log the token count and the cost OpenRouter reports. Otherwise they call the OpenAI
+Responses API with `OPENAI_API_KEY`; then pass OpenAI model names (for example `--model gpt-5.1`).
+
+| Role | Default | Effort | Why |
+| --- | --- | --- | --- |
+| Translation (`--model`, `--reasoning_effort`) | `anthropic/claude-haiku-5.5` | `none` | Cheapest model near the top of the Artificial Analysis Intelligence Index ($0.10/$0.50 per M tokens); translation is output-bound and needs no reasoning. |
+| Judge (`--judge_model`, `--judge_reasoning_effort`) | `openai/gpt-6.1-terra` | `medium` | On the index's price-performance frontier, and from a different family than the translator. |
+
+Run the judge on a few samples first (`--judge_samples 20`) and extrapolate the logged cost.
 
 ## Sizes
 
@@ -25,8 +38,8 @@ Run `build_data` with `--dry_run` first; it reports the number of documents and 
 Working files live on the runtime's local disk (`/content/work`) and are copied to Google Drive (`$DRIVE`) for
 safekeeping. Paths under `$DRIVE` mirror those under `$MEMORILLA_HOME`, so one `rsync` restores a session.
 
-**Setup**, after every connect (Python cell). Add the `OPENAI_API_KEY` secret in Colab's Secrets panel first if the
-session translates or judges:
+**Setup**, after every connect (Python cell). Add an `OPENROUTER_API_KEY` (or `OPENAI_API_KEY`) secret in Colab's
+Secrets panel, with notebook access, first if the session translates or judges:
 
 ```python
 from google.colab import drive, userdata
@@ -40,17 +53,19 @@ os.environ.update(
     DRIVE="/content/drive/MyDrive/memorilla_tr",
     PY="/content/venv/bin/python",
 )
-try:
-    os.environ["OPENAI_API_KEY"] = userdata.get("OPENAI_API_KEY")
-except Exception:
-    print("No OPENAI_API_KEY secret: translation and judging are unavailable in this session.")
+for key in ("OPENROUTER_API_KEY", "OPENAI_API_KEY"):
+    try:
+        os.environ[key] = userdata.get(key)
+        print(f"{key} loaded")
+    except Exception:
+        pass
 ```
 
 ```bash
 %%bash
 set -e
 nvidia-smi --query-gpu=name,memory.total --format=csv || echo "CPU runtime"
-[ -d /content/memorilla ] || git clone -b tr-eval https://github.com/<your-fork>/memorilla /content/memorilla
+[ -d /content/memorilla ] || git clone -b tr-eval https://github.com/Ogulcan-Ozdemir/memorilla /content/memorilla
 cd /content/memorilla && git pull --ff-only
 pip -q install uv
 [ -x "$PY" ] || uv venv /content/venv --python 3.11
@@ -72,7 +87,8 @@ $PY -m tr_eval.build_data --source pmv2 --collections 10 --questions_per_collect
 rsync -a "$MEMORILLA_HOME/data_tr" "$DRIVE/"
 ```
 
-**Evaluation** (GPU runtime, A100 40 GB or larger; T4 has no bfloat16 and does not work). Download the checkpoints,
+**Evaluation** (GPU runtime, A100 40 GB or larger; T4 has no bfloat16, and Blackwell GPUs such as the RTX PRO 6000
+need CUDA 12.8 builds that the pinned torch 2.7.0+cu126 lacks, so neither works). Download the checkpoints,
 plan the jobs and start the queue in the background:
 
 ```bash

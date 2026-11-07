@@ -380,3 +380,40 @@ def test_judge(tmp_path: Path) -> None:
 
     write_summary([{"run": "a", "accuracy": 50.0}, {"run": "b", "chrf": 12.5}], tmp_path)
     assert (tmp_path / "summary.md").read_text().splitlines()[0] == "| run | accuracy | chrf |"
+
+
+def test_openrouter_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    """OpenRouter replies go through Chat Completions with the reasoning effort, retry when empty and add up the cost."""
+    import tr_eval.common as common
+
+    requests = []
+    replies = iter([None, "Merhaba"])
+
+    def create(**kwargs: Any) -> SimpleNamespace:
+        """Return the next reply.
+
+        Args:
+            **kwargs: Request options, recorded.
+
+        Returns:
+            A Chat Completions-shaped response with usage.
+        """
+        requests.append(kwargs)
+        message = SimpleNamespace(content=next(replies))
+        usage = SimpleNamespace(prompt_tokens=10, completion_tokens=5, cost=0.25)
+        return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=usage)
+
+    monkeypatch.setattr(common, "USAGE", common.UsageMeter())
+    monkeypatch.setattr(common.time, "sleep", lambda seconds: None)
+    client = SimpleNamespace(
+        base_url="https://openrouter.ai/api/v1/", chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+    assert common.is_openrouter(client) and not common.is_openrouter(SimpleNamespace(responses=None))
+    assert common.complete(client, "Hello", "anthropic/claude-haiku-5.5", "none", max_retries=2) == "Merhaba"
+    assert len(requests) == 2 and requests[0]["extra_body"] == {"reasoning": {"effort": "none"}}
+    assert requests[0]["messages"] == [{"role": "user", "content": "Hello"}]
+    assert common.USAGE.requests == 2 and common.USAGE.cost == pytest.approx(0.5) and common.USAGE.prompt_tokens == 20
+
+    monkeypatch.setenv(common.OPENROUTER_KEY_ENV, "sk-or-test")
+    pytest.importorskip("openai")
+    assert common.is_openrouter(common.create_client())

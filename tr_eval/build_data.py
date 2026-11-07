@@ -45,8 +45,7 @@ from memorilla.data import (
 from memorilla.metrics import choice_index
 from memorilla.paths import DATA_DIR, DATA_REPO, resolve
 from memorilla.utils import DEFAULT_SEED, write_json
-from personalizationv4.generate import complete, create_client
-from tr_eval.common import JsonlCache, parse_json_object, stable_key
+from tr_eval.common import USAGE, JsonlCache, complete, create_client, parse_json_object, stable_key
 from tr_eval.prompts import document_prompt, qa_prompt
 
 if TYPE_CHECKING:
@@ -65,7 +64,7 @@ VARIANTS = {  # config prefix -> (language of the documents, language of the que
 }
 DEFAULT_OUTPUT_REPO = "data_tr"
 DEFAULT_COLLECTIONS = 10
-DEFAULT_MODEL = "gpt-5.1"
+DEFAULT_MODEL = "anthropic/claude-haiku-5.5"
 DEFAULT_REASONING_EFFORT = "none"
 DEFAULT_MAX_WORKERS = 32
 DEFAULT_MAX_RETRIES = 3
@@ -164,7 +163,7 @@ def parse_qa(reply: str, sources: list[str]) -> tuple[str, list[str]]:
 
 
 class Translator:
-    """Translates documents and questions with the OpenAI Responses API, through a persistent cache."""
+    """Translates documents and questions with an LLM (OpenRouter or OpenAI), through a persistent cache."""
 
     def __init__(
         self, client: "OpenAI", model: str, reasoning_effort: str, max_retries: int, cache: JsonlCache
@@ -172,7 +171,7 @@ class Translator:
         """Set up the translator.
 
         Args:
-            client: OpenAI client (or any object exposing ``responses.create``).
+            client: Client from ``tr_eval.common.create_client`` (or a test double; see ``tr_eval.common.complete``).
             model: Translation model.
             reasoning_effort: Reasoning effort for ``model``.
             max_retries: Attempts per request, and per unparsable question translation.
@@ -457,6 +456,7 @@ def main(args: argparse.Namespace) -> None:
     cache = JsonlCache(Path(args.cache) if args.cache else output / CACHE_FILE)
     translator = Translator(create_client(), args.model, args.reasoning_effort, args.max_retries, cache)
     translated_documents, translated_qa, failed = translate_rows(translator, rows, args.max_workers)
+    LOGGER.info("API usage (new requests only; cached translations are free): %s", USAGE.summary())
     if failed and not args.allow_missing:
         raise SystemExit(
             f"{len(failed)} of {len(rows)} rows could not be translated, so nothing was written. Rerun to retry them "
