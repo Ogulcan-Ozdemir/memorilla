@@ -18,6 +18,7 @@ from tr_eval.build_data import (
     VARIANTS,
     Translator,
     build_variants,
+    missing_speaker_turns,
     parse_qa,
     restore_speaker_labels,
     sample_rows,
@@ -138,6 +139,30 @@ def test_restore_speaker_labels() -> None:
     assert restore_speaker_labels(source, translation) == "User: Selam\nAssistant: Merhaba: orada"
     assert restore_speaker_labels("Leo: Hi\nAssistant: Hey", "Leo: Selam\nAsistan: Hey") == "Leo: Selam\nAssistant: Hey"
     assert restore_speaker_labels("Leo: Hi", "Leo: Asistan: dedi\nKullanıcı: x") == "Leo: Asistan: dedi\nKullanıcı: x"
+
+
+def test_translations_that_lose_a_turn_are_retried(tmp_path: Path) -> None:
+    """A document translation that drops a speaker turn is retried; the last attempt is kept either way."""
+    source = "Leo: Hi\nAssistant: Hello"
+    assert missing_speaker_turns(source, "Leo: Selam\nAssistant: Merhaba") == []
+    assert missing_speaker_turns(source, "Leo: Selam Merhaba") == ["Assistant"]
+    assert missing_speaker_turns("No labels here.", "Etiket yok.") == []
+    replies = iter(["Leo: Selam Merhaba", "Leo: Selam\nAsistan: Merhaba"])
+
+    def create(**kwargs: Any) -> SimpleNamespace:
+        """Return the next reply.
+
+        Args:
+            **kwargs: Request options (ignored).
+
+        Returns:
+            An object with ``output_text``.
+        """
+        return SimpleNamespace(output_text=next(replies))
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create))
+    translator = Translator(client, "fake", "none", 2, JsonlCache(tmp_path / "cache.jsonl"))
+    assert translator.document(source) == "Leo: Selam\nAssistant: Merhaba"
 
 
 def test_build_writes_matched_variants(data_repo: Path, tmp_path: Path) -> None:

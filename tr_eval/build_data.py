@@ -81,6 +81,8 @@ DEFAULT_MAX_RETRIES = 3
 CACHE_FILE = Path("translations") / "cache.jsonl"
 # Speaker labels that translators turn into Turkish despite the prompt, and the English label they restore to.
 TRANSLATED_SPEAKER_LABELS = {"Asistan": "Assistant", "Kullanıcı": "User"}
+ASSISTANT_LABEL = "Assistant"
+FIRST_SPEAKER = re.compile(r"\A([^\W\d_][^\W_]*):")
 MANIFEST_FILE = "tr_build.json"
 EMBEDDINGS_DIR = "embeddings"
 
@@ -194,6 +196,28 @@ def restore_speaker_labels(source: str, translation: str) -> str:
     return translation
 
 
+def missing_speaker_turns(source: str, translation: str) -> list[str]:
+    """Find the speakers whose turns a translation lost, such as an assistant turn merged into the user's text.
+
+    The speakers are the label that opens the source document (``User`` or the user's name) and ``Assistant``.
+
+    Args:
+        source: The English document.
+        translation: Its translation, after :func:`restore_speaker_labels`.
+
+    Returns:
+        The speakers with fewer labelled turns in the translation than in the source (empty when none is lost).
+    """
+    first = FIRST_SPEAKER.match(source)
+    speakers = {first.group(1), ASSISTANT_LABEL} if first else {ASSISTANT_LABEL}
+    return sorted(
+        speaker
+        for speaker in speakers
+        if len(re.findall(rf"^{re.escape(speaker)}:", translation, re.MULTILINE))
+        < len(re.findall(rf"^{re.escape(speaker)}:", source, re.MULTILINE))
+    )
+
+
 class Translator:
     """Translates documents and questions with an LLM (OpenRouter or OpenAI), through a persistent cache."""
 
@@ -239,7 +263,13 @@ class Translator:
             return text
         key = stable_key("document", self.model, text)
         if key not in self.cache:
-            self.cache.put(key, self._complete(document_prompt(text)).strip())
+            for attempt in range(self.max_retries):
+                translation = self._complete(document_prompt(text)).strip()
+                missing = missing_speaker_turns(text, restore_speaker_labels(text, translation))
+                if not missing:
+                    break
+                LOGGER.warning("Translation lost turns of %s (attempt %d/%d)", missing, attempt + 1, self.max_retries)
+            self.cache.put(key, translation)
         return restore_speaker_labels(text, self.cache.get(key))
 
     def qa(self, question: str, options: list[str]) -> tuple[str, list[str]]:
