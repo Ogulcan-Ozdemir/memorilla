@@ -19,6 +19,7 @@ from tr_eval.build_data import (
     Translator,
     build_variants,
     parse_qa,
+    restore_speaker_labels,
     sample_rows,
     translate_rows,
     write_config,
@@ -128,6 +129,15 @@ def test_parse_qa_checks_the_translation() -> None:
     with pytest.raises(ValueError):
         parse_qa('{"question": "", "options": ["A", "B"]}', ["a", "b"])
     assert parse_qa('{"question": "S", "options": ["A", "A"]}', ["x", "x"]) == ("S", ["A", "A"])
+
+
+def test_restore_speaker_labels() -> None:
+    """Turkish speaker labels at the start of a line go back to the source's English ones, and nothing else changes."""
+    source = "User: Hi\nAssistant: Hello: there"
+    translation = "Kullanıcı: Selam\nAsistan: Merhaba: orada"
+    assert restore_speaker_labels(source, translation) == "User: Selam\nAssistant: Merhaba: orada"
+    assert restore_speaker_labels("Leo: Hi\nAssistant: Hey", "Leo: Selam\nAsistan: Hey") == "Leo: Selam\nAssistant: Hey"
+    assert restore_speaker_labels("Leo: Hi", "Leo: Asistan: dedi\nKullanıcı: x") == "Leo: Asistan: dedi\nKullanıcı: x"
 
 
 def test_build_writes_matched_variants(data_repo: Path, tmp_path: Path) -> None:

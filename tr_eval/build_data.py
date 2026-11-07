@@ -25,6 +25,7 @@ import logging
 import os
 from pathlib import Path
 import random
+import re
 import shutil
 from typing import TYPE_CHECKING, Any
 
@@ -78,6 +79,8 @@ DEFAULT_REASONING_EFFORT = "none"
 DEFAULT_MAX_WORKERS = 32
 DEFAULT_MAX_RETRIES = 3
 CACHE_FILE = Path("translations") / "cache.jsonl"
+# Speaker labels that translators turn into Turkish despite the prompt, and the English label they restore to.
+TRANSLATED_SPEAKER_LABELS = {"Asistan": "Assistant", "Kullanıcı": "User"}
 MANIFEST_FILE = "tr_build.json"
 EMBEDDINGS_DIR = "embeddings"
 
@@ -171,6 +174,26 @@ def parse_qa(reply: str, sources: list[str]) -> tuple[str, list[str]]:
     return question.strip(), options
 
 
+def restore_speaker_labels(source: str, translation: str) -> str:
+    """Put back the English speaker labels a translator turned into Turkish.
+
+    The documents are conversations whose turns start with a label such as ``User:`` or ``Assistant:``. Translators
+    sometimes write ``Kullanıcı:`` or ``Asistan:`` instead, which would make the label language differ between
+    documents; a Turkish label at the start of a line is restored when the source has the English one.
+
+    Args:
+        source: The English document.
+        translation: Its translation.
+
+    Returns:
+        The translation with the English speaker labels.
+    """
+    for turkish, english in TRANSLATED_SPEAKER_LABELS.items():
+        if re.search(rf"^{re.escape(english)}:", source, re.MULTILINE):
+            translation = re.sub(rf"^{re.escape(turkish)}:", f"{english}:", translation, flags=re.MULTILINE)
+    return translation
+
+
 class Translator:
     """Translates documents and questions with an LLM (OpenRouter or OpenAI), through a persistent cache."""
 
@@ -217,7 +240,7 @@ class Translator:
         key = stable_key("document", self.model, text)
         if key not in self.cache:
             self.cache.put(key, self._complete(document_prompt(text)).strip())
-        return self.cache.get(key)
+        return restore_speaker_labels(text, self.cache.get(key))
 
     def qa(self, question: str, options: list[str]) -> tuple[str, list[str]]:
         """Translate a question together with its options.
