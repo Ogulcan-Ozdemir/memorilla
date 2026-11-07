@@ -6,7 +6,7 @@ and suffix; over-long prompts are truncated from the front. Outputs and scoring 
 
 import argparse
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -17,9 +17,16 @@ import torch.nn.functional as F
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
 from memorilla.benchmarks import (
+    CUSTOM_FULL_CONTEXT_LENGTH,
+    CUSTOM_MAX_NEW_TOKENS,
+    GENERATION,
+    HELPFUL_PROMPT,
     RETRIEVAL_CONTEXT_LENGTH,
+    SCORINGS,
     YARN_ORIGINAL_MAX_POSITION_EMBEDDINGS,
+    BaselineProtocol,
     Benchmark,
+    custom_benchmark,
     get_benchmarks,
 )
 from memorilla.data import (
@@ -27,12 +34,19 @@ from memorilla.data import (
     DOCUMENTS_COLUMN,
     EVAL_COLUMNS,
     QUESTION_COLUMN,
+    TEST_SPLIT,
     apply_chat_template,
     ensure_data,
     load_split,
 )
 from memorilla.embeddings import EmbeddingStore, ensure_embeddings, load_split_with_embeddings
-from memorilla.metrics import SCORER_GPU_MEMORY_UTILIZATION, check_scoring_inputs, clean_generation, score_predictions
+from memorilla.metrics import (
+    SCORER_GPU_MEMORY_UTILIZATION,
+    check_scoring_inputs,
+    clean_generation,
+    fit_choice_metrics,
+    score_predictions,
+)
 from memorilla.paths import DATA_DIR, DATA_REPO, DEFAULT_DECODER, DEFAULT_ENCODER, MODEL_CACHE_DIR, RESULTS_DIR, resolve
 from memorilla.utils import DEFAULT_SEED, local_model_path, release_gpu_memory, seed_everything, write_json
 
@@ -76,14 +90,32 @@ class PromptSet:
     yarn_factor: float | None
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse command-line arguments.
+
+    Args:
+        argv: Arguments to parse; None reads ``sys.argv``.
 
     Returns:
         The parsed arguments.
     """
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--benchmark", type=str, required=True, help="Registered benchmark name, or 'all'.")
+    target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument("--benchmark", type=str, help="Registered benchmark name, or 'all'.")
+    target.add_argument("--config", type=str, help="Dataset config to evaluate instead of a registered benchmark.")
+    parser.add_argument("--split", type=str, default=TEST_SPLIT, help="Split to evaluate.")
+    parser.add_argument(
+        "--scoring", type=str, choices=SCORINGS, default=GENERATION, help="Scoring method for --config."
+    )
+    parser.add_argument("--system_prompt", type=str, default=None, help="Override the baseline system prompt.")
+    parser.add_argument("--max_new_tokens", type=int, default=None, help="Override the generation budget.")
+    parser.add_argument(
+        "--full_context_length",
+        type=int,
+        default=None,
+        help=f"Full-context window for --config (default {CUSTOM_FULL_CONTEXT_LENGTH}).",
+    )
+    parser.add_argument("--yarn_factor", type=float, default=None, help="YaRN factor of that window, for --config.")
     parser.add_argument("--method", type=str, choices=METHODS, required=True, help="Baseline to run.")
     parser.add_argument("--top_k", type=int, default=5, help="Documents retrieved per question with --method rag.")
     parser.add_argument("--decoder", type=str, default=DEFAULT_DECODER, help="Decoder (Hub id or local path).")
@@ -113,7 +145,39 @@ def parse_args() -> argparse.Namespace:
         help="Results directory (one folder per method and benchmark).",
     )
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Random seed.")
-    return parser.parse_args()
+    args = parser.parse_args(argv)
+    if args.benchmark and (args.full_context_length is not None or args.yarn_factor is not None):
+        parser.error("--full_context_length and --yarn_factor apply to --config only.")
+    return args
+
+
+def resolve_targets(args: argparse.Namespace) -> list[Benchmark]:
+    """Turn the arguments into the list of benchmarks to evaluate, with overrides applied.
+
+    Args:
+        args: Parsed command-line arguments.
+
+    Returns:
+        The benchmarks, each with a baseline protocol.
+    """
+    if args.benchmark:
+        benchmarks = get_benchmarks(args.benchmark)
+    else:
+        protocol = BaselineProtocol(
+            system_prompt=HELPFUL_PROMPT,
+            max_new_tokens=CUSTOM_MAX_NEW_TOKENS,
+            full_context_length=args.full_context_length or CUSTOM_FULL_CONTEXT_LENGTH,
+            yarn_factor=args.yarn_factor,
+        )
+        benchmarks = [custom_benchmark(args.config, args.scoring, baseline=protocol)]
+    if args.split != TEST_SPLIT:
+        benchmarks = [
+            replace(benchmark, name=f"{benchmark.name}-{args.split}", split=args.split) for benchmark in benchmarks
+        ]
+
+    overrides = {"system_prompt": args.system_prompt, "max_new_tokens": args.max_new_tokens}
+    overrides = {key: value for key, value in overrides.items() if value is not None}
+    return [replace(benchmark, baseline=replace(benchmark.baseline, **overrides)) for benchmark in benchmarks]
 
 
 def method_label(method: str, top_k: int) -> str:
@@ -271,6 +335,7 @@ def prepare_prompts(benchmark: Benchmark, args: argparse.Namespace, tokenizer: P
             documents = [list(docs) for docs in dataset[DOCUMENTS_COLUMN]]
         else:
             documents = [[] for _ in range(len(dataset))]
+    benchmark = fit_choice_metrics(benchmark, dataset)
     check_scoring_inputs(benchmark, dataset)
 
     max_model_len, yarn_factor = context_window(benchmark, args.method)
@@ -363,7 +428,7 @@ def main(args: argparse.Namespace) -> None:
     output_dir = resolve(args.output_dir) / method_label(args.method, args.top_k)
 
     windows: dict[tuple[int, float | None], list[PromptSet]] = defaultdict(list)
-    for benchmark in get_benchmarks(args.benchmark):
+    for benchmark in resolve_targets(args):
         prompt_set = prepare_prompts(benchmark, args, tokenizer)
         windows[(prompt_set.max_model_len, prompt_set.yarn_factor)].append(prompt_set)
 

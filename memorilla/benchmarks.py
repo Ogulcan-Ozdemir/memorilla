@@ -27,6 +27,11 @@ METRICS_BY_SCORING = {
     GENERATION: GENERATION_METRICS,
 }
 
+CUSTOM_SPLIT = "test"
+CUSTOM_MAX_LENGTH = 2048
+CUSTOM_MAX_NEW_TOKENS = 128
+CUSTOM_FULL_CONTEXT_LENGTH = 40_960  # Qwen3's native context length
+
 RETRIEVAL_CONTEXT_LENGTH = 32_768
 YARN_ORIGINAL_MAX_POSITION_EMBEDDINGS = 32_768
 
@@ -265,6 +270,30 @@ BENCHMARKS: dict[str, Benchmark] = {
         ),
     )
 }
+
+
+def custom_benchmark(config: str, scoring: str, baseline: BaselineProtocol | None = None) -> Benchmark:
+    """Build an evaluation target for a dataset config outside the registry, with generic prompts and budgets.
+
+    Args:
+        config: Dataset config name, which also names the target.
+        scoring: One of ``SCORINGS``; every metric of that scoring method is reported.
+        baseline: Protocol for the text-only baselines, or None.
+
+    Returns:
+        The target, on the ``test`` split.
+    """
+    return Benchmark(
+        name=config,
+        config=config,
+        split=CUSTOM_SPLIT,
+        system_prompt=HELPFUL_PROMPT,
+        max_length=CUSTOM_MAX_LENGTH,
+        max_new_tokens=CUSTOM_MAX_NEW_TOKENS,
+        scoring=scoring,
+        metrics=METRICS_BY_SCORING[scoring],
+        baseline=baseline,
+    )
 
 
 def get_benchmarks(name: str) -> list[Benchmark]:

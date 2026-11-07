@@ -11,34 +11,20 @@ from datasets import Dataset
 from tqdm import tqdm
 from transformers import AutoConfig
 
-from memorilla.benchmarks import (
-    ACCURACY,
-    ACCURACY_HARD,
-    CHOICE,
-    GENERATION,
-    METRICS_BY_SCORING,
-    SCORINGS,
-    Benchmark,
-    get_benchmarks,
-)
-from memorilla.data import (
-    DEFAULT_SYSTEM_PROMPT,
-    EVAL_COLUMNS,
-    HARD_COLUMN,
-    TEST_SPLIT,
-    MemoryCollator,
-    MemoryDataset,
-    ensure_data,
-)
+from memorilla.benchmarks import GENERATION, SCORINGS, Benchmark, custom_benchmark, get_benchmarks
+from memorilla.data import DEFAULT_SYSTEM_PROMPT, EVAL_COLUMNS, TEST_SPLIT, MemoryCollator, MemoryDataset, ensure_data
 from memorilla.embeddings import EmbeddingStore, ensure_embeddings, load_split_with_embeddings
 from memorilla.memory import MemoryModule
-from memorilla.metrics import SCORER_GPU_MEMORY_UTILIZATION, check_scoring_inputs, clean_generation, score_predictions
+from memorilla.metrics import (
+    SCORER_GPU_MEMORY_UTILIZATION,
+    check_scoring_inputs,
+    clean_generation,
+    fit_choice_metrics,
+    score_predictions,
+)
 from memorilla.paths import DATA_DIR, DATA_REPO, DEFAULT_DECODER, DEFAULT_ENCODER, MODEL_CACHE_DIR, RESULTS_DIR, resolve
 from memorilla.utils import DEFAULT_SEED, read_recipe, release_gpu_memory, seed_everything
 from memorilla.vllm import DECODER_GPU_MEMORY_UTILIZATION, MemoryVLLM
-
-CUSTOM_MAX_LENGTH = 2048
-CUSTOM_MAX_NEW_TOKENS = 128
 
 
 def parse_args() -> argparse.Namespace:
@@ -107,18 +93,7 @@ def resolve_targets(args: argparse.Namespace) -> list[Benchmark]:
     if args.benchmark:
         benchmarks = get_benchmarks(args.benchmark)
     else:
-        benchmarks = [
-            Benchmark(
-                name=args.config,
-                config=args.config,
-                split=TEST_SPLIT,
-                system_prompt=DEFAULT_SYSTEM_PROMPT,
-                max_length=CUSTOM_MAX_LENGTH,
-                max_new_tokens=CUSTOM_MAX_NEW_TOKENS,
-                scoring=args.scoring,
-                metrics=METRICS_BY_SCORING[args.scoring],
-            )
-        ]
+        benchmarks = [custom_benchmark(args.config, args.scoring)]
     if args.split != TEST_SPLIT:
         benchmarks = [
             replace(benchmark, name=f"{benchmark.name}-{args.split}", split=args.split) for benchmark in benchmarks
@@ -157,9 +132,7 @@ def load_target(benchmark: Benchmark, args: argparse.Namespace) -> tuple[Benchma
         cache_dir=args.cache_dir,
     )
     dataset, store = load_split_with_embeddings(benchmark.config, benchmark.split, root, EVAL_COLUMNS, args.encoder)
-    if benchmark.scoring == CHOICE:
-        has_hard = HARD_COLUMN in dataset.column_names and any(dataset[HARD_COLUMN])
-        benchmark = replace(benchmark, metrics=(ACCURACY, ACCURACY_HARD) if has_hard else (ACCURACY,))
+    benchmark = fit_choice_metrics(benchmark, dataset)
     check_scoring_inputs(benchmark, dataset)
     return benchmark, dataset, store
 

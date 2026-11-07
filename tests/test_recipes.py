@@ -25,6 +25,9 @@ MODULES = [
     "memorilla.utils",
     "train",
     "evaluate_baselines",
+    "tr_eval.build_data",
+    "tr_eval.run_queue",
+    "tr_eval.score",
 ]
 INFERENCE_MODULES = ["memorilla.vllm", "evaluate"]
 STEPS = 100

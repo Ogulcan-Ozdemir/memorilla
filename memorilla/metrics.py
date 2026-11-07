@@ -4,6 +4,7 @@ All metrics are returned as fractions in ``[0, 1]``; ``write_metrics`` reports t
 """
 
 from collections.abc import Sequence
+from dataclasses import replace
 from itertools import chain
 import json
 from pathlib import Path
@@ -452,6 +453,22 @@ def compute_metrics(
     if requested:
         scores.update(generation_metrics(predictions, references, requested))
     return {name: scores[name] for name in metrics}
+
+
+def fit_choice_metrics(benchmark: Benchmark, dataset: Dataset) -> Benchmark:
+    """Report ``accuracy_hard`` for choice scoring exactly when the split flags hard rows.
+
+    Args:
+        benchmark: The benchmark.
+        dataset: Split to be evaluated.
+
+    Returns:
+        The benchmark, with its metrics adjusted when it uses ``choice`` scoring.
+    """
+    if benchmark.scoring != CHOICE:
+        return benchmark
+    has_hard = HARD_COLUMN in dataset.column_names and any(dataset[HARD_COLUMN])
+    return replace(benchmark, metrics=(ACCURACY, ACCURACY_HARD) if has_hard else (ACCURACY,))
 
 
 def check_scoring_inputs(benchmark: Benchmark, dataset: Dataset) -> None:

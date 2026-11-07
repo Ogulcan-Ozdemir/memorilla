@@ -37,6 +37,7 @@ dependencies = [
 wandb = ["wandb"]
 dev = ["pytest", "ruff", "black", "pre-commit"]
 personalizationv4 = ["openai"]
+tr = ["openai", "sacrebleu", "lingua-language-detector"]
 rl = ["textworld==1.7.0"]
 
 [tool.uv]
@@ -76,5 +77,5 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["memorilla", "personalizationv4"]
+known-first-party = ["memorilla", "personalizationv4", "tr_eval"]
 force-sort-within-sections = true
