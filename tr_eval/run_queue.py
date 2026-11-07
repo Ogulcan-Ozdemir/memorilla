@@ -48,6 +48,11 @@ EVAL_MAX_LENGTH = 8192
 MAX_NEW_TOKENS = 384
 RAG_TOP_K = 5
 FULL_CONTEXT_MAX_NUM_SEQS = 2
+# Turkish takes about 1.65 times the decoder tokens of English, so the translated collections overflow the registered
+# full-context windows (longest prompts: 88.8K tokens for tr_pv4, 56.6K for tr_pmv2) and get cut from the front. The
+# ``full`` tier also runs the Turkish set with these larger windows (length, YaRN factor), under ``baselines_long/``.
+TR_FULL_CONTEXT_WINDOWS = {"pv4": (98_304, 3.0), "pmv2": (65_536, 2.0)}
+LONG_CONTEXT_GROUP = "baselines_long"
 PROMPTS = {"en_prompt": PERSONA_PROMPT, "tr_prompt": PERSONA_PROMPT_TR, "en_prompt_reply_tr": PERSONA_PROMPT_REPLY_TR}
 STATE_DIR = ".queue"
 LOCK_FILE = "queue.lock"
@@ -128,7 +133,15 @@ def evaluate_job(
     return Job(f"{checkpoint}/{prompt}/{config}", "evaluate", f"{results}/{checkpoint}/{prompt}", tuple(args))
 
 
-def baseline_job(method: str, source: str, config: str, data_repo: str, results: str, extra: list[str]) -> Job:
+def baseline_job(
+    method: str,
+    source: str,
+    config: str,
+    data_repo: str,
+    results: str,
+    extra: list[str],
+    window: tuple[int, float | None] | None = None,
+) -> Job:
     """Build a text-only baseline job.
 
     Args:
@@ -138,6 +151,8 @@ def baseline_job(method: str, source: str, config: str, data_repo: str, results:
         data_repo: Local data repository.
         results: Results root.
         extra: Further ``evaluate_baselines.py`` arguments.
+        window: Full-context length and YaRN factor replacing the registered protocol's; the job then lands in
+            ``<results>/baselines_long/`` instead.
 
     Returns:
         The job; results land in ``<results>/baselines/<method label>/<config>/``.
@@ -160,11 +175,13 @@ def baseline_job(method: str, source: str, config: str, data_repo: str, results:
         label = f"rag_top{RAG_TOP_K}"
     if method == "full_context":
         protocol = BENCHMARKS[source].baseline
-        args += ["--full_context_length", str(protocol.full_context_length)]
-        if protocol.yarn_factor is not None:
-            args += ["--yarn_factor", str(protocol.yarn_factor)]
+        length, yarn_factor = window or (protocol.full_context_length, protocol.yarn_factor)
+        args += ["--full_context_length", str(length)]
+        if yarn_factor is not None:
+            args += ["--yarn_factor", str(yarn_factor)]
         args += ["--max_num_seqs", str(FULL_CONTEXT_MAX_NUM_SEQS)]
-    return Job(f"baselines/{label}/{config}", "baselines", f"{results}/baselines", tuple(args + extra))
+    group = "baselines" if window is None else LONG_CONTEXT_GROUP
+    return Job(f"{group}/{label}/{config}", "baselines", f"{results}/{group}", tuple(args + extra))
 
 
 def plan_jobs(
@@ -181,7 +198,8 @@ def plan_jobs(
     ``core`` runs each source's own checkpoint on the English and Turkish sets (Turkish with both the English and
     the Turkish system prompt) and the closed-book baseline on both. ``extended`` adds the "reply in Turkish" prompt,
     the cross-lingual sets, the general Stage 3 checkpoint and RAG. ``full`` adds the full-context baseline, which
-    needs a 40 GB or larger GPU.
+    needs a 40 GB or larger GPU, with the window of each source's protocol and, for the Turkish set, also with
+    a window that fits the longer Turkish prompts (``TR_FULL_CONTEXT_WINDOWS``).
 
     Args:
         sources: Source configs of the translated sets (each must also name a checkpoint folder, e.g. ``pv4``).
@@ -208,10 +226,10 @@ def plan_jobs(
         if source not in BENCHMARKS:
             raise ValueError(f"{source!r} is not a registered benchmark; the plan needs its protocol.")
         en, tr, en2tr, tr2en = (f"{prefix}_{source}" for prefix in VARIANTS)
-        evaluations, baselines = [], []  # (checkpoint, prompt, config) and (method, config)
+        evaluations, baselines = [], []  # (checkpoint, prompt, config) and (method, config, window)
         if "core" in tiers:
             evaluations += [(source, "en_prompt", en), (source, "en_prompt", tr), (source, "tr_prompt", tr)]
-            baselines += [("closed_book", en), ("closed_book", tr)]
+            baselines += [("closed_book", en, None), ("closed_book", tr, None)]
         if "extended" in tiers:
             evaluations += [
                 (source, "en_prompt_reply_tr", tr),
@@ -220,15 +238,18 @@ def plan_jobs(
                 (GENERAL_CHECKPOINT, "en_prompt", en),
                 (GENERAL_CHECKPOINT, "en_prompt", tr),
             ]
-            baselines += [("rag", en), ("rag", tr)]
+            baselines += [("rag", en, None), ("rag", tr, None)]
         if "full" in tiers:
-            baselines += [("full_context", en), ("full_context", tr)]
+            baselines += [("full_context", en, None), ("full_context", tr, None)]
+            if source in TR_FULL_CONTEXT_WINDOWS:
+                baselines.append(("full_context", tr, TR_FULL_CONTEXT_WINDOWS[source]))
         jobs += [
             evaluate_job(checkpoint_dir, checkpoint, prompt, config, data_repo, results, eval_args)
             for checkpoint, prompt, config in evaluations
         ]
         jobs += [
-            baseline_job(method, source, config, data_repo, results, baseline_args) for method, config in baselines
+            baseline_job(method, source, config, data_repo, results, baseline_args, window)
+            for method, config, window in baselines
         ]
     return jobs
 

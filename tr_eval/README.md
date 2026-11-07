@@ -122,7 +122,11 @@ tail -n 3 "$MEMORILLA_HOME/queue.log"
 
 After a disconnect, rerun the setup cells and the queue cell: finished jobs are skipped. On an L4 (24 GB), plan with
 `--eval_args "--gpu_memory_utilization 0.85"` and leave out the `full` tier. Add `full` (the full-context baseline,
-65K tokens with YaRN for PV4) only on a 40 GB or larger GPU.
+65K tokens with YaRN for PV4) only on a 40 GB or larger GPU. Turkish takes about 1.65 times the tokens of English, so
+the Turkish collections do not fit those windows (every `tr_pv4` prompt loses about a fifth from the front, system
+prompt included); `full` therefore also runs the Turkish sets with a window that fits them (98K tokens with YaRN 3 for
+PV4, 65K for PMV2) under `baselines_long/`. Compare `en_` with `baselines_long/.../tr_` for the ceiling, and the
+truncated `baselines/.../tr_` run only as the same-window protocol.
 
 **Scoring**, once the queue is done:
 
