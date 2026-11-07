@@ -93,8 +93,10 @@ done
 rsync -a "$MEMORILLA_HOME/data_tr" "$DRIVE/"
 ```
 
-**Evaluation** (GPU runtime, A100 40 GB or larger; T4 has no bfloat16, and Blackwell GPUs such as the RTX PRO 6000
-need CUDA 12.8 builds that the pinned torch 2.7.0+cu126 lacks, so neither works). Download the checkpoints,
+**Evaluation** (GPU runtime, A100 40 GB or larger; T4 has no bfloat16 and does not work). On a Blackwell GPU such as
+the RTX PRO 6000 (sm_120), the pinned torch 2.7.0+cu126 and the vLLM 0.9.1 wheel have no kernels for the GPU; run
+`bash tr_eval/setup_blackwell.sh` once per session (it builds vLLM for sm_120 the first time, about 16 minutes, and
+keeps the wheel in `$DRIVE/wheels`), then use `PY=/content/venv128/bin/python` in the cells below. Download the checkpoints,
 plan the jobs and start the queue in the background:
 
 ```bash
