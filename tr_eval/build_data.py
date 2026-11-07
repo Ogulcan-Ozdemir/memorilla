@@ -13,7 +13,7 @@ choices. Translations are cached in an append-only JSONL file keyed by model and
 example a Colab disconnect) resumes where it stopped, and a rerun only pays for what is missing. Embeddings are not
 computed here; ``evaluate.py`` computes them on first use, and a rewritten config's stale embeddings are removed.
 
-Run from the repository root: ``python -m tr_eval.build_data --source pv4 --collections 10``.
+Run from the repository root: ``python -m tr_eval.build_data --source pv4 --collections 5 --questions_per_collection 80``.
 """
 
 import argparse
@@ -45,7 +45,16 @@ from memorilla.data import (
 from memorilla.metrics import choice_index
 from memorilla.paths import DATA_DIR, DATA_REPO, resolve
 from memorilla.utils import DEFAULT_SEED, write_json
-from tr_eval.common import USAGE, JsonlCache, complete, create_client, parse_json_object, stable_key
+from tr_eval.common import (
+    USAGE,
+    JsonlCache,
+    complete,
+    create_client,
+    log_key_usage,
+    parse_json_object,
+    set_budget,
+    stable_key,
+)
 from tr_eval.prompts import document_prompt, qa_prompt
 
 if TYPE_CHECKING:
@@ -64,7 +73,7 @@ VARIANTS = {  # config prefix -> (language of the documents, language of the que
 }
 DEFAULT_OUTPUT_REPO = "data_tr"
 DEFAULT_COLLECTIONS = 10
-DEFAULT_MODEL = "anthropic/claude-haiku-5.5"
+DEFAULT_MODEL = "xiaomi/mimo-v2.6-flash"
 DEFAULT_REASONING_EFFORT = "none"
 DEFAULT_MAX_WORKERS = 32
 DEFAULT_MAX_RETRIES = 3
@@ -408,6 +417,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Sampling seed.")
     parser.add_argument("--model", type=str, default=DEFAULT_MODEL, help="Translation model.")
     parser.add_argument("--reasoning_effort", type=str, default=DEFAULT_REASONING_EFFORT, help="Its reasoning effort.")
+    parser.add_argument(
+        "--max_cost",
+        type=float,
+        default=None,
+        help="Stop sending OpenRouter requests once this run has spent this many USD (finished work stays cached).",
+    )
     parser.add_argument("--max_workers", type=int, default=DEFAULT_MAX_WORKERS, help="Concurrent requests.")
     parser.add_argument("--max_retries", type=int, default=DEFAULT_MAX_RETRIES, help="Attempts per request.")
     parser.add_argument("--data_repo", type=str, default=DATA_REPO, help="Source data repo (Hub id or directory).")
@@ -455,8 +470,11 @@ def main(args: argparse.Namespace) -> None:
     output = resolve(args.output_repo)
     cache = JsonlCache(Path(args.cache) if args.cache else output / CACHE_FILE)
     translator = Translator(create_client(), args.model, args.reasoning_effort, args.max_retries, cache)
+    set_budget(args.max_cost)
+    log_key_usage()
     translated_documents, translated_qa, failed = translate_rows(translator, rows, args.max_workers)
     LOGGER.info("API usage (new requests only; cached translations are free): %s", USAGE.summary())
+    log_key_usage()
     if failed and not args.allow_missing:
         raise SystemExit(
             f"{len(failed)} of {len(rows)} rows could not be translated, so nothing was written. Rerun to retry them "

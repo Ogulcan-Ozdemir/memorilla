@@ -382,8 +382,9 @@ def test_judge(tmp_path: Path) -> None:
     assert (tmp_path / "summary.md").read_text().splitlines()[0] == "| run | accuracy | chrf |"
 
 
-def test_openrouter_client(monkeypatch: pytest.MonkeyPatch) -> None:
-    """OpenRouter replies go through Chat Completions with the reasoning effort, retry when empty and add up the cost."""
+def test_openrouter_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """OpenRouter replies go through Chat Completions with the reasoning effort, retry when empty, add up the cost and
+    stop at the budget, also inside the judge."""
     import tr_eval.common as common
 
     requests = []
@@ -413,6 +414,16 @@ def test_openrouter_client(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(requests) == 2 and requests[0]["extra_body"] == {"reasoning": {"effort": "none"}}
     assert requests[0]["messages"] == [{"role": "user", "content": "Hello"}]
     assert common.USAGE.requests == 2 and common.USAGE.cost == pytest.approx(0.5) and common.USAGE.prompt_tokens == 20
+
+    assert common.USAGE.reasoning_tokens == 0 and "$0.5000" in common.USAGE.summary()
+
+    common.set_budget(0.5)
+    with pytest.raises(common.BudgetExceeded):
+        common.complete(client, "Hello", "anthropic/claude-haiku-5.5", "none", max_retries=2)
+    assert len(requests) == 2
+    judge = Judge(client, "m", "none", 2, JsonlCache(tmp_path / "judge.jsonl"))
+    with pytest.raises(common.BudgetExceeded):
+        judge("Soru?", "Cevap", "Yanıt")
 
     monkeypatch.setenv(common.OPENROUTER_KEY_ENV, "sk-or-test")
     pytest.importorskip("openai")

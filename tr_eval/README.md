@@ -17,21 +17,27 @@ any language. The repository's BLEU, ROUGE and METEOR are not reliable for Turki
 ## Models
 
 With `OPENROUTER_API_KEY` set, both scripts call [OpenRouter](https://openrouter.ai) (Chat Completions with its
-`reasoning` parameter) and log the token count and the cost OpenRouter reports. Otherwise they call the OpenAI
+`reasoning` parameter), log tokens, the cost OpenRouter reports and the key's total spend, and stop sending requests once
+a run has spent `--max_cost` USD (finished work stays cached, so a rerun resumes). Otherwise they call the OpenAI
 Responses API with `OPENAI_API_KEY`; then pass OpenAI model names (for example `--model gpt-5.1`).
+
+The defaults are chosen for a total budget of about $1 (prices per million input/output tokens, November 2026; scores
+from the Artificial Analysis Intelligence Index):
 
 | Role | Default | Effort | Why |
 | --- | --- | --- | --- |
-| Translation (`--model`, `--reasoning_effort`) | `anthropic/claude-haiku-5.5` | `none` | Cheapest model near the top of the Artificial Analysis Intelligence Index ($0.10/$0.50 per M tokens); translation is output-bound and needs no reasoning. |
-| Judge (`--judge_model`, `--judge_reasoning_effort`) | `openai/gpt-6.1-terra` | `medium` | On the index's price-performance frontier, and from a different family than the translator. |
+| Translation (`--model`, `--reasoning_effort`) | `xiaomi/mimo-v2.6-flash` ($0.14/$0.28) | `none` | Translation is output-bound and needs no reasoning. The cheapest scored model (27) whose reasoning can be switched off: MiniMax-M3.1-Flash and GLM-5.3-Flash force reasoning, and Claude Haiku 5.5 costs almost twice as much per output token. |
+| Judge (`--judge_model`, `--judge_reasoning_effort`) | `anthropic/claude-haiku-5.5` ($0.10/$0.50) | `medium` | Judge prompts are input-heavy with short replies, so the low input price matters; it scores 25-36 depending on effort and comes from a different family than the translator and the evaluated model. |
 
-Run the judge on a few samples first (`--judge_samples 20`) and extrapolate the logged cost.
+Also set a credit limit on the OpenRouter key itself (Settings → API Keys); that is the hard cap.
 
 ## Sizes
 
-`--collections 10 --questions_per_collection 40` gives 400 rows per config. That puts a 95% interval of about ±5 points
-on one accuracy. The English and Turkish configs share their rows, so differences between them are paired and tighter.
-Run `build_data` with `--dry_run` first; it reports the number of documents and characters to translate.
+PV4 collections hold about 140 questions over about 210K characters of documents, PMV2 collections about 25 questions
+over about 160K characters, so the cost is driven by the number of collections. `--collections 5
+--questions_per_collection 80` gives 400 PV4 rows (a 95% interval of about ±5 points on one accuracy) and about 125
+PMV2 rows (about ±9 points). The English and Turkish configs share their rows, so differences between them are paired
+and tighter. Run `build_data` with `--dry_run` first; it reports the number of documents and characters to translate.
 
 ## Running on Google Colab
 
@@ -76,14 +82,14 @@ mkdir -p "$MEMORILLA_HOME" "$DRIVE" && rsync -a "$DRIVE/" "$MEMORILLA_HOME/"
 The repository's pinned stack (torch 2.7.0, vLLM 0.9.1) goes into its own virtual environment, so Colab's preinstalled
 packages stay untouched; every script runs with `$PY`.
 
-**Data** (CPU runtime):
+**Data** (CPU runtime). About 1.9M characters for both sources; expected to cost about $0.35, and the caps stop it at $0.60:
 
 ```bash
 %%bash
 cd /content/memorilla
-$PY -m tr_eval.build_data --source pv4 --collections 10 --questions_per_collection 40 --dry_run
-$PY -m tr_eval.build_data --source pv4 --collections 10 --questions_per_collection 40
-$PY -m tr_eval.build_data --source pmv2 --collections 10 --questions_per_collection 40
+for src in pv4 pmv2; do
+  $PY -m tr_eval.build_data --source $src --collections 5 --questions_per_collection 80 --max_cost 0.30
+done
 rsync -a "$MEMORILLA_HOME/data_tr" "$DRIVE/"
 ```
 
@@ -121,9 +127,11 @@ After a disconnect, rerun the setup cells and the queue cell: finished jobs are 
 ```bash
 %%bash
 cd /content/memorilla
-$PY -m tr_eval.score --judge_samples 300 --human_sheet 50   # add --embedding_similarity on a GPU runtime
+$PY -m tr_eval.score --judge_samples 40 --judge_include "*/tr_*" "*/xlang_en2tr_*" --max_cost 0.30 \
+    --human_sheet 50   # add --embedding_similarity on a GPU runtime
 rsync -a "$MEMORILLA_HOME/results" "$DRIVE/"
 ```
 
-`results/tr/summary.md` holds one row per run. `results/tr/human_ratings.csv` is the blind sheet for native speakers;
+The judge rates the 14 runs with Turkish questions, 40 rows each (about $0.20); try `--judge_samples 5` first to see
+the cost per judgement. `results/tr/summary.md` holds one row per run. `results/tr/human_ratings.csv` is the blind sheet for native speakers;
 `human_key.csv` maps its items back to runs and rows.

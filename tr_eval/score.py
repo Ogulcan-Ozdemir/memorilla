@@ -13,13 +13,14 @@ script adds, for every run under a results root (every directory with a ``predic
 
 It writes ``tr_metrics.json`` next to each run's ``metrics.json``, a ``summary.csv`` and ``summary.md`` over all runs,
 and optionally a blind sheet for human raters. Run from the repository root:
-``python -m tr_eval.score --results results/tr --judge_samples 300``.
+``python -m tr_eval.score --results results/tr --judge_samples 40``.
 """
 
 import argparse
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 import csv
+from fnmatch import fnmatch
 import json
 import logging
 from pathlib import Path
@@ -32,7 +33,17 @@ from memorilla.metrics import METRICS_FILE, PREDICTIONS_FILE
 from memorilla.paths import DEFAULT_ENCODER, MODEL_CACHE_DIR, resolve
 from memorilla.utils import DEFAULT_SEED, write_json
 from tr_eval.build_data import TURKISH, VARIANTS
-from tr_eval.common import USAGE, JsonlCache, complete, create_client, parse_json_object, stable_key
+from tr_eval.common import (
+    USAGE,
+    BudgetExceeded,
+    JsonlCache,
+    complete,
+    create_client,
+    log_key_usage,
+    parse_json_object,
+    set_budget,
+    stable_key,
+)
 from tr_eval.prompts import judge_prompt
 from tr_eval.run_queue import DEFAULT_RESULTS, STATE_DIR
 
@@ -52,7 +63,7 @@ HUMAN_KEY = "human_key.csv"
 MIXED_MIN_WORDS = 3
 JUDGE_CRITERIA = ("personalization", "consistency", "no_fabrication", "grammar", "naturalness", "address")
 JUDGE_SCALE = (1, 5)
-DEFAULT_JUDGE_MODEL = "openai/gpt-6.1-terra"
+DEFAULT_JUDGE_MODEL = "anthropic/claude-haiku-5.5"
 DEFAULT_JUDGE_REASONING_EFFORT = "medium"
 DEFAULT_MAX_WORKERS = 16
 DEFAULT_MAX_RETRIES = 3
@@ -250,6 +261,8 @@ class Judge:
                     reply = complete(self.client, prompt, self.model, self.reasoning_effort, self.max_retries)
                     self.cache.put(key, parse_judgement(reply))
                     break
+                except BudgetExceeded:
+                    raise
                 except (ValueError, RuntimeError) as error:
                     LOGGER.warning("Judge failed (attempt %d/%d): %s", attempt + 1, self.max_retries, error)
             else:
@@ -394,6 +407,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--judge_reasoning_effort", default=DEFAULT_JUDGE_REASONING_EFFORT, help="Its reasoning effort."
     )
+    parser.add_argument(
+        "--judge_include",
+        nargs="+",
+        default=["*"],
+        help="Judge only runs whose name (relative to --results) matches one of these glob patterns, e.g. '*/tr_*'.",
+    )
+    parser.add_argument(
+        "--max_cost",
+        type=float,
+        default=None,
+        help="Stop sending OpenRouter judge requests once this run has spent this many USD (judgements stay cached).",
+    )
     parser.add_argument("--max_workers", type=int, default=DEFAULT_MAX_WORKERS, help="Concurrent judge requests.")
     parser.add_argument("--max_retries", type=int, default=DEFAULT_MAX_RETRIES, help="Attempts per judge request.")
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Seed of the judge sample and human sheet.")
@@ -436,6 +461,8 @@ def main(args: argparse.Namespace) -> None:
     if args.judge_samples > 0:
         cache = JsonlCache(results / JUDGE_CACHE_FILE)
         judge = Judge(create_client(), args.judge_model, args.judge_reasoning_effort, args.max_retries, cache)
+        set_budget(args.max_cost)
+        log_key_usage()
     engine = None
     if args.embedding_similarity:
         from memorilla.embeddings import load_encoder
@@ -457,7 +484,7 @@ def main(args: argparse.Namespace) -> None:
         if engine is not None:
             scores["embedding_similarity"] = round(embedding_similarity(predictions, references, engine), 4)
         indices = judge_indices(len(records), args.judge_samples, args.seed)
-        if judge is not None:
+        if judge is not None and any(fnmatch(name, pattern) for pattern in args.judge_include):
             means, judged = judge_run(judge, records, indices, args.max_workers)
             scores.update(means)
             with open(run / JUDGE_FILE, "w", encoding="utf-8") as handle:
@@ -478,6 +505,7 @@ def main(args: argparse.Namespace) -> None:
     LOGGER.info("Wrote %s and %s under %s.", SUMMARY_CSV, SUMMARY_MD, results)
     if judge is not None:
         LOGGER.info("Judge API usage (new requests only; cached judgements are free): %s", USAGE.summary())
+        log_key_usage()
 
 
 if __name__ == "__main__":

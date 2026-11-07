@@ -1,8 +1,8 @@
 """Helpers shared by the Turkish-evaluation scripts: the LLM client, an append-only JSONL cache and JSON parsing.
 
 The client talks to OpenRouter when ``OPENROUTER_API_KEY`` is set (Chat Completions, with OpenRouter's ``reasoning``
-parameter and its per-request cost added to a running total), and otherwise to the OpenAI Responses API through
-``personalizationv4.generate``.
+parameter and its per-request cost added to a running total that ``set_budget`` can cap), and otherwise to the OpenAI
+Responses API through ``personalizationv4.generate``.
 """
 
 from dataclasses import dataclass, field
@@ -15,6 +15,7 @@ import re
 import threading
 import time
 from typing import TYPE_CHECKING, Any
+import urllib.request
 
 from personalizationv4 import generate
 
@@ -27,17 +28,39 @@ CODE_FENCE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)
 OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_HOST = "openrouter.ai"
+OPENROUTER_KEY_URL = OPENROUTER_BASE_URL + "/key"
+KEY_INFO_TIMEOUT_SECONDS = 10
+
+
+class BudgetExceeded(RuntimeError):
+    """Raised before a request once the reported cost of this process has reached its budget."""
 
 
 @dataclass
 class UsageMeter:
-    """Thread-safe running totals of the tokens and the cost (as reported by OpenRouter) of the requests so far."""
+    """Thread-safe running totals of the tokens and the cost (as reported by OpenRouter) of the requests so far.
+
+    Attributes:
+        limit: Budget in USD for this process; ``check`` raises once ``cost`` reaches it. None means no limit.
+    """
 
     requests: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    reasoning_tokens: int = 0
     cost: float = 0.0
+    limit: float | None = None
+    missing_cost: bool = False
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def check(self) -> None:
+        """Refuse a new request when the budget is spent.
+
+        Raises:
+            BudgetExceeded: If ``cost`` has reached ``limit``.
+        """
+        if self.limit is not None and self.cost >= self.limit:
+            raise BudgetExceeded(f"Budget of ${self.limit:.4f} reached ({self.summary()}).")
 
     def add(self, usage: Any) -> None:
         """Add one response's usage.
@@ -51,7 +74,13 @@ class UsageMeter:
                 return
             self.prompt_tokens += getattr(usage, "prompt_tokens", 0) or 0
             self.completion_tokens += getattr(usage, "completion_tokens", 0) or 0
-            self.cost += float(getattr(usage, "cost", 0) or 0)
+            details = getattr(usage, "completion_tokens_details", None)
+            self.reasoning_tokens += getattr(details, "reasoning_tokens", 0) or 0
+            cost = getattr(usage, "cost", None)
+            if cost is None and not self.missing_cost:
+                self.missing_cost = True
+                LOGGER.warning("A response reported no cost: the budget check cannot see it.")
+            self.cost += float(cost or 0)
 
     def summary(self) -> str:
         """Describe the totals.
@@ -60,12 +89,36 @@ class UsageMeter:
             A one-line summary.
         """
         return (
-            f"{self.requests} requests, {self.prompt_tokens} prompt and {self.completion_tokens} completion tokens, "
-            f"${self.cost:.4f}"
+            f"{self.requests} requests, {self.prompt_tokens} prompt and {self.completion_tokens} completion tokens "
+            f"({self.reasoning_tokens} reasoning), ${self.cost:.4f}"
         )
 
 
 USAGE = UsageMeter()
+
+
+def set_budget(max_cost: float | None) -> None:
+    """Cap the reported cost of the OpenRouter requests this process may still make.
+
+    Args:
+        max_cost: Budget in USD, or None for no cap. Requests already in flight when it is reached still finish.
+    """
+    USAGE.limit = max_cost
+
+
+def log_key_usage() -> None:
+    """Log what the OpenRouter key has spent in total and its credit limit, when ``OPENROUTER_API_KEY`` is set."""
+    key = os.environ.get(OPENROUTER_KEY_ENV)
+    if not key:
+        return
+    request = urllib.request.Request(OPENROUTER_KEY_URL, headers={"Authorization": f"Bearer {key}"})
+    try:
+        with urllib.request.urlopen(request, timeout=KEY_INFO_TIMEOUT_SECONDS) as response:
+            info = json.load(response).get("data", {})
+    except Exception as error:
+        LOGGER.warning("Could not read the OpenRouter key's usage: %s", error)
+        return
+    LOGGER.info("OpenRouter key: $%s spent so far, limit %s.", info.get("usage"), info.get("limit"))
 
 
 def create_client() -> "OpenAI":
@@ -115,10 +168,12 @@ def complete(client: "OpenAI", prompt: str, model: str, reasoning_effort: str, m
 
     Raises:
         RuntimeError: If every attempt fails or returns an empty response.
+        BudgetExceeded: If the budget set with ``set_budget`` is spent (OpenRouter only).
     """
     if not is_openrouter(client):
         return generate.complete(client, prompt, model, reasoning_effort, max_retries)
     for attempt in range(max_retries):
+        USAGE.check()
         try:
             response = client.chat.completions.create(
                 model=model,
