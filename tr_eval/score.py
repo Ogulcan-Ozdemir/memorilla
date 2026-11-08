@@ -60,7 +60,10 @@ SUMMARY_CSV = "summary.csv"
 SUMMARY_MD = "summary.md"
 HUMAN_SHEET = "human_ratings.csv"
 HUMAN_KEY = "human_key.csv"
-MIXED_MIN_WORDS = 3
+# A short or uncertain segment is usually a misreading (names such as "Leroy Jenkins'in", or "may ask for a " read as
+# Turkish), and long answers have many of them, so only confident runs of several words count as mixing.
+MIXED_MIN_WORDS = 5
+MIXED_MIN_CONFIDENCE = 0.9
 JUDGE_CRITERIA = ("personalization", "consistency", "no_fabrication", "grammar", "naturalness", "address")
 JUDGE_SCALE = (1, 5)
 DEFAULT_JUDGE_MODEL = "anthropic/claude-haiku-5.5"
@@ -78,7 +81,8 @@ def make_language_detector() -> Callable[[str], Detection]:
 
     Returns:
         A function from a text to its language (``en``, ``tr`` or None when undetermined) and its language segments
-        as ``(language, word count)`` pairs.
+        as ``(language, word count)`` pairs, keeping only segments whose language the detector, run on the segment
+        alone, gives a confidence of at least ``MIXED_MIN_CONFIDENCE``.
 
     Raises:
         ImportError: If ``lingua-language-detector`` is not installed.
@@ -102,6 +106,8 @@ def make_language_detector() -> Callable[[str], Detection]:
         segments = [
             (result.language.iso_code_639_1.name.lower(), result.word_count)
             for result in detector.detect_multiple_languages_of(text)
+            if detector.compute_language_confidence(text[result.start_index : result.end_index], result.language)
+            >= MIXED_MIN_CONFIDENCE
         ]
         return (language.iso_code_639_1.name.lower() if language else None), segments
 

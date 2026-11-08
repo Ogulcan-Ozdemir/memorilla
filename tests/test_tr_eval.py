@@ -350,7 +350,7 @@ def fake_detect(text: str) -> tuple[str | None, list[tuple[str, int]]]:
 def test_language_metrics() -> None:
     """Answers are checked against the language of their question, and mixed-in English runs are counted."""
     questions = ["Kahvaltıda ne yiyeyim?", "Hangi şehre gideyim?", "What should I cook?", "Ne içeyim?"]
-    predictions = ["Yulaf ezmesi öneririm.", "Paris", "Köfte yap.", "Çay iç [with lemon and honey]"]
+    predictions = ["Yulaf ezmesi öneririm.", "Paris", "Köfte yap.", "Çay iç [with lemon and some honey]"]
     scores = language_metrics(questions, predictions, fake_detect)
     assert scores == {"language_fidelity": 0.5, "turkish": 0.75, "mixed": 0.25}
 
@@ -369,6 +369,12 @@ def test_lingua_detector() -> None:
         detect,
     )
     assert scores["mixed"] == 1.0
+    long_english = (
+        "You could host a formal presentation, a panel discussion, a workshop or a casual meetup. Each format "
+        "suits a different audience, so think about who may ask for a seat and what they expect to take away."
+    )
+    names = "Leroy Jenkins'in bir videosunu izleyip Project Lullaby için yeni fikirler bulabilirsin."
+    assert language_metrics(["What should I host?", "Ne yapayım?"], [long_english, names], detect)["mixed"] == 0.0
 
 
 def test_chrf_handles_turkish() -> None:
