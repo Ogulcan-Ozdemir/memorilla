@@ -611,7 +611,7 @@ def main(args: argparse.Namespace) -> None:
         mode_dir = output_dir / mode
         write_sessions(mode_dir / args.config / SESSIONS_FILE, sessions, dataset, answers, generator.log)
         jobs[mode] = turn_jobs(benchmark, dataset, sessions, answers, mode_dir)
-    del model
+    del model, make, generator  # every reference to the engine, so that its GPU memory is freed before scoring
     release_gpu_memory()
     if args.method != MEMORILLA and engine_choice is None:
         os.environ.pop(VLLM_ENGINE_VARIABLE, None)
