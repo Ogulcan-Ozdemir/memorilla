@@ -134,10 +134,11 @@ truncated `baselines/.../tr_` run only as the same-window protocol.
 %%bash
 cd /content/memorilla
 $PY -m tr_eval.score --judge_samples 40 --judge_include "*/tr_*" "*/xlang_en2tr_*" --max_cost 0.30 \
-    --human_sheet 50   # add --embedding_similarity on a GPU runtime
+    --human_sheet 5   # add --embedding_similarity on a GPU runtime
 rsync -a "$MEMORILLA_HOME/results" "$DRIVE/"
 ```
 
-The judge rates the 14 runs with Turkish questions, 40 rows each (about $0.20); try `--judge_samples 5` first to see
-the cost per judgement. `results/tr/summary.md` holds one row per run. `results/tr/human_ratings.csv` is the blind sheet for native speakers;
+The judge rates the 18 runs with Turkish questions, 40 rows each (720 judgements, $0.23 in November 2026); try
+`--judge_samples 5` first to see the cost per judgement. `--human_sheet` takes that many items from each of those runs
+(5 gives a 90-item sheet). `results/tr/summary.md` holds one row per run. `results/tr/human_ratings.csv` is the blind sheet for native speakers;
 `human_key.csv` maps its items back to runs and rows.
