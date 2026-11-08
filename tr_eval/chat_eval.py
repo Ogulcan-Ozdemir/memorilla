@@ -481,7 +481,9 @@ def summarize(summaries: dict[str, dict[str, Any]], jobs: Sequence[tuple[Benchma
         weights = [sum(dataset[HARD_COLUMN]) if name == ACCURACY_HARD else len(dataset) for _, dataset, _, _ in jobs]
         total = sum(weights)
         overall[name] = (
-            round(sum(turn[name] * weight for turn, weight in zip(turns, weights)) / total, 2) if total else 0.0
+            round(sum(turn[name] * weight for turn, weight in zip(turns, weights, strict=True)) / total, 2)
+            if total
+            else 0.0
         )
     return {"turns": turns, "overall": {**overall, "num_examples": sum(len(dataset) for _, dataset, _, _ in jobs)}}
 
