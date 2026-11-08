@@ -243,6 +243,14 @@ def test_plan_round_trip() -> None:
     long = next(job for job in jobs if job.name == "baselines_long/full_context/tr_pv4")
     assert long.output_dir.endswith("/baselines_long") and "98304" in long.args and "3.0" in long.args
     assert not any(job.name.startswith("baselines_long/") and "en_pv4" in job.name for job in jobs)
+    chats = plan_jobs(["pv4"], ["core", "chat"])
+    assert [job.name for job in chats][:3] == names[:3]  # the chat tier comes after the single-turn jobs
+    chat = next(job for job in chats if job.name == "chat/pv4/en_prompt_reply_tr/tr_pv4")
+    assert chat.output_dir == "results/tr/chat/pv4/en_prompt_reply_tr" and "checkpoints/pv4" in chat.args
+    assert chat.command("python")[:3] == ["python", "-m", "tr_eval.chat_eval"]
+    rag = next(job for job in chats if job.name == "chat/rag_top5/tr_pv4")
+    assert "--checkpoint" not in rag.args and rag.args[rag.args.index("--top_k") + 1] == "5"
+    assert len([job for job in chats if job.script == "chat"]) == 8
     assert all(job.args[-2:] == ("--gpu_memory_utilization", "0.85") for job in jobs if job.script == "evaluate")
     with pytest.raises(ValueError):
         plan_jobs(["toy"], ["core"])

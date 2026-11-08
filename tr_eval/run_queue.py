@@ -36,8 +36,8 @@ from tr_eval.common import stable_key
 from tr_eval.prompts import PERSONA_PROMPT_REPLY_TR, PERSONA_PROMPT_TR
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SCRIPTS = {"evaluate": "evaluate.py", "baselines": "evaluate_baselines.py"}
-TIERS = ("core", "extended", "full")
+SCRIPTS = {"evaluate": "evaluate.py", "baselines": "evaluate_baselines.py", "chat": "-m tr_eval.chat_eval"}
+TIERS = ("core", "extended", "full", "chat")
 DEFAULT_TIERS = ("core",)
 DEFAULT_SOURCES = ("pv4", "pmv2")
 DEFAULT_CHECKPOINTS = "checkpoints"
@@ -85,7 +85,7 @@ class Job:
         Returns:
             The command.
         """
-        return [python, SCRIPTS[self.script], *self.args, "--output_dir", self.output_dir]
+        return [python, *SCRIPTS[self.script].split(), *self.args, "--output_dir", self.output_dir]
 
     def fingerprint(self) -> str:
         """Identify the job's command, so that a changed command reruns a done job.
@@ -184,6 +184,35 @@ def baseline_job(
     return Job(f"{group}/{label}/{config}", "baselines", f"{results}/{group}", tuple(args + extra))
 
 
+def chat_job(
+    method: str, config: str, data_repo: str, results: str, checkpoint_dir: str, checkpoint: str = "", prompt: str = ""
+) -> Job:
+    """Build a multi-turn chat job (``tr_eval.chat_eval``).
+
+    Args:
+        method: ``memorilla``, ``closed_book`` or ``rag``.
+        config: Dataset config.
+        data_repo: Local data repository.
+        results: Results root.
+        checkpoint_dir: Directory holding the downloaded checkpoint folders.
+        checkpoint: Checkpoint folder, for ``memorilla``.
+        prompt: Key of ``PROMPTS``, for ``memorilla``.
+
+    Returns:
+        The job; results land in ``<results>/chat/<checkpoint>/<prompt>/`` or ``<results>/chat/<method label>/``,
+        each with ``history/`` and ``no_history/`` below it.
+    """
+    args = ["--method", method, "--config", config, "--data_repo", data_repo]
+    if method == "memorilla":
+        args += ["--checkpoint", f"{checkpoint_dir}/{checkpoint}", "--system_prompt", PROMPTS[prompt]]
+        label = f"{checkpoint}/{prompt}"
+    else:
+        label = f"rag_top{RAG_TOP_K}" if method == "rag" else method
+        if method == "rag":
+            args += ["--top_k", str(RAG_TOP_K)]
+    return Job(f"chat/{label}/{config}", "chat", f"{results}/chat/{label}", tuple(args))
+
+
 def plan_jobs(
     sources: Iterable[str],
     tiers: Iterable[str],
@@ -199,7 +228,9 @@ def plan_jobs(
     the Turkish system prompt) and the closed-book baseline on both. ``extended`` adds the "reply in Turkish" prompt,
     the cross-lingual sets, the general Stage 3 checkpoint and RAG. ``full`` adds the full-context baseline, which
     needs a 40 GB or larger GPU, with the window of each source's protocol and, for the Turkish set, also with
-    a window that fits the longer Turkish prompts (``TR_FULL_CONTEXT_WINDOWS``).
+    a window that fits the longer Turkish prompts (``TR_FULL_CONTEXT_WINDOWS``). ``chat`` adds multi-turn sessions
+    (``tr_eval.chat_eval``) for the source checkpoint (English; Turkish with the Turkish prompt and with "reply in
+    Turkish"; English memory with Turkish questions), the closed-book baseline and RAG, after each source's other jobs.
 
     Args:
         sources: Source configs of the translated sets (each must also name a checkpoint folder, e.g. ``pv4``).
@@ -251,6 +282,21 @@ def plan_jobs(
             baseline_job(method, source, config, data_repo, results, baseline_args, window)
             for method, config, window in baselines
         ]
+        if "chat" in tiers:
+            chats = [
+                ("memorilla", en, source, "en_prompt"),
+                ("memorilla", tr, source, "en_prompt_reply_tr"),
+                ("memorilla", tr, source, "tr_prompt"),
+                ("memorilla", en2tr, source, "tr_prompt"),
+                ("closed_book", en, "", ""),
+                ("closed_book", tr, "", ""),
+                ("rag", en, "", ""),
+                ("rag", tr, "", ""),
+            ]
+            jobs += [
+                chat_job(method, config, data_repo, results, checkpoint_dir, checkpoint, prompt)
+                for method, config, checkpoint, prompt in chats
+            ]
     return jobs
 
 

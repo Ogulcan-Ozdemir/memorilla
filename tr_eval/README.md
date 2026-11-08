@@ -8,6 +8,7 @@ work when the user chats in Turkish. Everything runs from the repository root an
 | --- | --- | --- |
 | `python -m tr_eval.build_data` | Samples collections from a test split, machine-translates them once and writes four configs with the same rows: `en_<src>`, `tr_<src>`, `xlang_en2tr_<src>` (English memory, Turkish question) and `xlang_tr2en_<src>`. | CPU, LLM API |
 | `python -m tr_eval.run_queue` | `plan` writes the job table, `run` works through it (resumable, with an optional copy to Google Drive after every job), `status` shows progress. | GPU for `run` |
+| `python -m tr_eval.chat_eval` | Multi-turn chat: chains each collection's questions into sessions of 4 turns, where each turn sees the earlier questions and the model's own answers, and also runs every session without history for a paired comparison. Memorilla, closed book or RAG; one scored run per turn. | GPU |
 | `python -m tr_eval.score` | Adds Turkish-aware scores to every run: language fidelity, chrF++, optional embedding similarity and an LLM judge, then writes `summary.csv`/`summary.md` and an optional blind sheet for human raters. | CPU (GPU for `--embedding_similarity`), LLM API for the judge |
 
 Choice accuracy, computed by `evaluate.py` itself, is the primary automatic metric: it compares embeddings and works in
@@ -127,6 +128,22 @@ the Turkish collections do not fit those windows (every `tr_pv4` prompt loses ab
 prompt included); `full` therefore also runs the Turkish sets with a window that fits them (98K tokens with YaRN 3 for
 PV4, 65K for PMV2) under `baselines_long/`. Compare `en_` with `baselines_long/.../tr_` for the ceiling, and the
 truncated `baselines/.../tr_` run only as the same-window protocol.
+
+**Multi-turn chat** (the `chat` tier, 16 jobs for both sources): add it to the plan and rerun the queue; finished
+jobs are skipped.
+
+```bash
+%%bash
+cd /content/memorilla
+$PY -m tr_eval.run_queue plan --tiers core extended full chat > "$MEMORILLA_HOME/results/tr/runs.tsv"
+nohup $PY -m tr_eval.run_queue run "$MEMORILLA_HOME/results/tr/runs.tsv" --sync_to "$DRIVE" \
+    >> "$MEMORILLA_HOME/queue.log" 2>&1 &
+```
+
+Each job writes `results/tr/chat/<run>/{history,no_history}/turn-<t>/<config>/` (scored like any other run) and
+`<config>/chat_summary.json` (accuracy per turn) and `<config>/sessions.jsonl` (the transcripts). The `no_history`
+runs reproduce single-turn answers for the same rows, so `history` minus `no_history` at each turn is the effect of
+the conversation. The memory is conditioned on the current question only, as in training.
 
 **Scoring**, once the queue is done:
 

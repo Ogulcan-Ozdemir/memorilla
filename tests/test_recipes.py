@@ -26,6 +26,7 @@ MODULES = [
     "train",
     "evaluate_baselines",
     "tr_eval.build_data",
+    "tr_eval.chat_eval",
     "tr_eval.run_queue",
     "tr_eval.score",
 ]
