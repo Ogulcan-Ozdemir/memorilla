@@ -137,12 +137,14 @@ def test_turn_jobs_and_summary(data_repo: Path) -> None:
     assert jobs[1][3] == Path("out/history/turn-2/toy")
     assert jobs[1][2] == [answers[sessions[1].rows[1]]]
 
+    hard = [sum(job[1]["hard"]) for job in jobs]
     summaries = {
-        "history/turn-1/toy": {"accuracy": 50.0, "num_examples": 2},
-        "history/turn-2/toy": {"accuracy": 80.0, "num_examples": 1},
+        "history/turn-1/toy": {"accuracy": 50.0, "accuracy_hard": 30.0, "num_examples": 2},
+        "history/turn-2/toy": {"accuracy": 80.0, "accuracy_hard": 90.0, "num_examples": 1},
     }
     summary = summarize(summaries, jobs)
-    assert summary["overall"] == {"accuracy": 60.0, "num_examples": 3}
+    expected_hard = round((30.0 * hard[0] + 90.0 * hard[1]) / sum(hard), 2)  # weighted by hard rows, not all rows
+    assert summary["overall"] == {"accuracy": 60.0, "accuracy_hard": expected_hard, "num_examples": 3}
     assert [turn["accuracy"] for turn in summary["turns"]] == [50.0, 80.0]
 
 

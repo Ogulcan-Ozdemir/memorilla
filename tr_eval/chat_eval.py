@@ -35,13 +35,14 @@ from typing import TYPE_CHECKING, Any
 from datasets import Dataset
 import torch
 
-from memorilla.benchmarks import CHOICE, HELPFUL_PROMPT, Benchmark, custom_benchmark
+from memorilla.benchmarks import ACCURACY_HARD, CHOICE, HELPFUL_PROMPT, Benchmark, custom_benchmark
 from memorilla.data import (
     ANSWER_COLUMN,
     COLLECTION_COLUMN,
     DEFAULT_SYSTEM_PROMPT,
     DOCUMENTS_COLUMN,
     EVAL_COLUMNS,
+    HARD_COLUMN,
     QUESTION_COLUMN,
     TEST_SPLIT,
     apply_chat_template,
@@ -462,20 +463,27 @@ def write_sessions(
 
 
 def summarize(summaries: dict[str, dict[str, Any]], jobs: Sequence[tuple[Benchmark, Dataset, list[str], Path]]) -> dict:
-    """Collect one mode's per-turn metrics and their row-weighted mean.
+    """Collect one mode's per-turn metrics and their means over all rows.
+
+    Each metric is weighted by the rows it is computed on: ``accuracy_hard`` by the turn's hard rows, everything else
+    by all of the turn's rows.
 
     Args:
         summaries: ``metrics.json`` content keyed by job name, from ``score_predictions``.
         jobs: The mode's per-turn jobs.
 
     Returns:
-        ``turns`` (metrics per turn) and ``overall`` (row-weighted means).
+        ``turns`` (metrics per turn) and ``overall`` (the weighted means).
     """
     turns = [summaries[benchmark.name] for benchmark, _, _, _ in jobs]
-    total = sum(turn["num_examples"] for turn in turns)
-    names = [name for name in turns[0] if name != "num_examples"]
-    overall = {name: round(sum(turn[name] * turn["num_examples"] for turn in turns) / total, 2) for name in names}
-    return {"turns": turns, "overall": {**overall, "num_examples": total}}
+    overall = {}
+    for name in (name for name in turns[0] if name != "num_examples"):
+        weights = [sum(dataset[HARD_COLUMN]) if name == ACCURACY_HARD else len(dataset) for _, dataset, _, _ in jobs]
+        total = sum(weights)
+        overall[name] = (
+            round(sum(turn[name] * weight for turn, weight in zip(turns, weights)) / total, 2) if total else 0.0
+        )
+    return {"turns": turns, "overall": {**overall, "num_examples": sum(len(dataset) for _, dataset, _, _ in jobs)}}
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
